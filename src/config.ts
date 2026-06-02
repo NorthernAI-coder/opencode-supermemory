@@ -5,14 +5,17 @@ import { stripJsoncComments } from "./services/jsonc.js";
 import { loadCredentials } from "./services/auth.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
-export const PLUGIN_VERSION = "2.0.6";
+export const PLUGIN_VERSION = "2.0.7";
 const CONFIG_FILES = [
   join(CONFIG_DIR, "supermemory.jsonc"),
   join(CONFIG_DIR, "supermemory.json"),
 ];
 
+export const DEFAULT_BASE_URL = "https://api.supermemory.ai";
+
 interface SupermemoryConfig {
   apiKey?: string;
+  baseUrl?: string;
   similarityThreshold?: number;
   maxMemories?: number;
   maxProjectMemories?: number;
@@ -47,7 +50,7 @@ const DEFAULT_KEYWORD_PATTERNS = [
   "always\\s+remember",
 ];
 
-const DEFAULTS: Required<Omit<SupermemoryConfig, "apiKey" | "userContainerTag" | "projectContainerTag">> = {
+const DEFAULTS: Required<Omit<SupermemoryConfig, "apiKey" | "baseUrl" | "userContainerTag" | "projectContainerTag">> = {
   similarityThreshold: 0.6,
   maxMemories: 5,
   maxProjectMemories: 10,
@@ -102,14 +105,36 @@ function getApiKey(): string | undefined {
 }
 
 export const SUPERMEMORY_API_KEY = getApiKey();
+
+function normalizeBaseUrl(baseUrl: unknown): string | null {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) return null;
+
+  try {
+    const url = new URL(baseUrl.trim());
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
 export function getApiBaseUrl(): string {
-  return (
+  const configured =
     process.env.SUPERMEMORY_API_URL ||
     process.env.SUPERMEMORY_BASE_URL ||
+    fileConfig.baseUrl ||
     loadCredentials()?.apiBaseUrl ||
-    "https://api.supermemory.ai"
-  );
+    DEFAULT_BASE_URL;
+  const normalized = normalizeBaseUrl(configured);
+  if (!normalized) {
+    throw new Error("Invalid baseUrl: expected an absolute http(s) URL");
+  }
+  return normalized;
 }
+
 export const CONFIG_FILE = CONFIG_FILES[1];
 const DEFAULT_CONFIG_FILE = CONFIG_FILE ?? join(CONFIG_DIR, "supermemory.json");
 
