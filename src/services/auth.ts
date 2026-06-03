@@ -1,8 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { exec } from "node:child_process";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { openUrl } from "./openUrl.js";
 
 const CREDENTIALS_DIR = join(homedir(), ".supermemory-opencode");
 const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json");
@@ -38,21 +38,6 @@ export function clearCredentials(): boolean {
   if (!existsSync(CREDENTIALS_FILE)) return false;
   rmSync(CREDENTIALS_FILE);
   return true;
-}
-
-function openBrowser(url: string): void {
-  const platform = process.platform;
-
-  const commands: Record<string, string> = {
-    darwin: `open "${url}"`,
-    win32: `start "" "${url}"`,
-    linux: `xdg-open "${url}"`,
-  };
-
-  const cmd = commands[platform] ?? `xdg-open "${url}"`;
-  exec(cmd, (err) => {
-    if (err) console.error("Failed to open browser:", err.message);
-  });
 }
 
 export interface AuthResult {
@@ -129,7 +114,13 @@ export function startAuthFlow(timeoutMs = 120000): Promise<AuthResult> {
 
       console.log("Opening browser for authentication...");
       console.log(`If it doesn't open, visit: ${authUrl}`);
-      openBrowser(authUrl);
+      openUrl(authUrl).catch((error) => {
+        if (!resolved) {
+          resolved = true;
+          server.close();
+          resolve({ success: false, error: `Failed to open browser: ${error.message}` });
+        }
+      });
     });
 
     setTimeout(() => {

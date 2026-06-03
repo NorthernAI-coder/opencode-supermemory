@@ -121,7 +121,7 @@ export class SupermemoryClient {
         sm_source: "opencode",
         sm_capture_mode: metadata?.sm_capture_mode ?? "tool",
         ...(metadata ?? {}),
-      } as Record<string, string | number | boolean | string[]>;
+      } as unknown as Record<string, string | number | boolean | string[]>;
 
       const result = await withTimeout(
         this.getClient().memories.add({
