@@ -101,6 +101,14 @@ function getApiKey(): string | undefined {
 }
 
 export const SUPERMEMORY_API_KEY = getApiKey();
+export function getApiBaseUrl(): string {
+  return (
+    process.env.SUPERMEMORY_API_URL ||
+    process.env.SUPERMEMORY_BASE_URL ||
+    loadCredentials()?.apiBaseUrl ||
+    "https://api.supermemory.ai"
+  );
+}
 export const CONFIG_FILE = CONFIG_FILES[1];
 const DEFAULT_CONFIG_FILE = CONFIG_FILE ?? join(CONFIG_DIR, "supermemory.json");
 

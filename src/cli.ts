@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import * as readline from "node:readline";
 import { stripJsoncComments } from "./services/jsonc.js";
-import { startAuthFlow, clearCredentials, loadCredentials } from "./services/auth.js";
-import { writeInstallDefaults, CONFIG_FILE } from "./config.js";
+import { startAuthFlow, clearCredentials, loadCredentials, CREDENTIALS_FILE } from "./services/auth.js";
+import { CONFIG, CONFIG_FILE, SUPERMEMORY_API_KEY, getApiBaseUrl, isConfigured, writeInstallDefaults } from "./config.js";
+import { SupermemoryClient } from "./services/client.js";
+import { getTags } from "./services/tags.js";
 
 const OPENCODE_CONFIG_DIR = join(homedir(), ".config", "opencode");
 const OPENCODE_COMMAND_DIR = join(OPENCODE_CONFIG_DIR, "command");
@@ -204,6 +206,23 @@ This will remove the saved credentials from ~/.supermemory-opencode/credentials.
 Inform the user whether logout succeeded and that they'll need to run /supermemory-login to re-authenticate.
 `;
 
+const SUPERMEMORY_STATUS_COMMAND = `---
+description: Show Supermemory connection status
+---
+
+# Supermemory Status
+
+Run this command to check whether OpenCode is connected to Supermemory:
+
+\`\`\`bash
+bunx opencode-supermemory@latest status
+\`\`\`
+
+Report the connection status, credential source, API URL, and account information if available.
+
+Never print the full API key.
+`;
+
 function createReadline(): readline.Interface {
   return readline.createInterface({
     input: process.stdin,
@@ -318,6 +337,10 @@ function createCommands(): boolean {
   writeFileSync(logoutPath, SUPERMEMORY_LOGOUT_COMMAND);
   console.log(`✓ Created /supermemory-logout command`);
 
+  const statusPath = join(OPENCODE_COMMAND_DIR, "supermemory-status.md");
+  writeFileSync(statusPath, SUPERMEMORY_STATUS_COMMAND);
+  console.log(`✓ Created /supermemory-status command`);
+
   return true;
 }
 
@@ -411,7 +434,7 @@ async function install(options: InstallOptions): Promise<number> {
   }
 
   // Step 2: Create commands
-  console.log("\nStep 2: Create /supermemory-init, /supermemory-login, and /supermemory-logout commands");
+  console.log("\nStep 2: Create /supermemory-init, /supermemory-login, /supermemory-logout, and /supermemory-status commands");
   if (options.tui) {
     const shouldCreate = await confirm(rl!, "Add supermemory commands?");
     if (!shouldCreate) {
@@ -486,12 +509,152 @@ async function login(): Promise<number> {
   }
 }
 
+function maskKey(key: string | undefined): string {
+  if (!key) return "not set";
+  if (key.length <= 12) return `${key.slice(0, 4)}...`;
+  return `${key.slice(0, 6)}...${key.slice(-4)}`;
+}
+
+function getConfiguredApiKeyFromFile(): string | undefined {
+  try {
+    if (!existsSync(DEFAULT_CONFIG_FILE)) return undefined;
+    const parsed = JSON.parse(readFileSync(DEFAULT_CONFIG_FILE, "utf-8")) as { apiKey?: string };
+    return parsed.apiKey;
+  } catch {
+    return undefined;
+  }
+}
+
+function getKeySource(): string {
+  if (process.env.SUPERMEMORY_API_KEY) return "SUPERMEMORY_API_KEY env var";
+  if (getConfiguredApiKeyFromFile()) return DEFAULT_CONFIG_FILE;
+  if (loadCredentials()) return CREDENTIALS_FILE;
+  return "not configured";
+}
+
+function getDevTlsHint(apiUrl: string): string | null {
+  if (!apiUrl.includes(".dev.supermemory.ai")) return null;
+  if (process.env.NODE_EXTRA_CA_CERTS) return null;
+  return "Dev API TLS: set NODE_EXTRA_CA_CERTS to your Portless CA before starting OpenCode.";
+}
+
+async function fetchJson(apiUrl: string, path: string): Promise<unknown | null> {
+  if (!SUPERMEMORY_API_KEY) return null;
+  try {
+    const response = await fetch(`${apiUrl}${path}`, {
+      headers: {
+        Authorization: `Bearer ${SUPERMEMORY_API_KEY}`,
+        "x-sm-source": "opencode",
+      },
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function findAccountInfo(value: unknown): { email?: string; name?: string; userId?: string; orgName?: string } {
+  const seen = new Set<unknown>();
+  const stack = [value];
+  const result: { email?: string; name?: string; userId?: string; orgName?: string } = {};
+
+  while (stack.length > 0) {
+    const item = stack.pop();
+    if (!item || typeof item !== "object" || seen.has(item)) continue;
+    seen.add(item);
+
+    const record = item as Record<string, unknown>;
+    for (const [key, raw] of Object.entries(record)) {
+      const lower = key.toLowerCase();
+      if (!result.email && lower === "email" && typeof raw === "string") result.email = raw;
+      if (!result.name && lower === "name" && typeof raw === "string") result.name = raw;
+      if (!result.userId && (lower === "userid" || lower === "user_id") && typeof raw === "string") result.userId = raw;
+      if (!result.orgName && (lower === "organizationname" || lower === "orgname") && typeof raw === "string") result.orgName = raw;
+
+      if (raw && typeof raw === "object") stack.push(raw);
+    }
+  }
+
+  return result;
+}
+
+async function getAccountInfo(apiUrl: string): Promise<{ email?: string; name?: string; userId?: string; orgName?: string }> {
+  for (const path of ["/v3/auth/account/memberships", "/v3/account/memberships", "/v3/me"]) {
+    const data = await fetchJson(apiUrl, path);
+    const info = findAccountInfo(data);
+    if (info.email || info.name || info.userId || info.orgName) return info;
+  }
+  return {};
+}
+
+async function status(): Promise<number> {
+  const apiUrl = getApiBaseUrl();
+  const tags = getTags(process.cwd());
+  const lines: string[] = [];
+
+  lines.push("supermemory status");
+  lines.push("");
+  lines.push(`Connected: ${isConfigured() ? "checking..." : "no"}`);
+  lines.push(`API key: ${maskKey(SUPERMEMORY_API_KEY)} (${getKeySource()})`);
+  lines.push(`API URL: ${apiUrl}`);
+  lines.push("Memory scope: current project + user profile");
+  lines.push(`Recall mode: ${CONFIG.autoRecallEveryPrompt ? "auto-recall on every prompt" : "session/event based"}`);
+  lines.push(`Capture cadence: ${CONFIG.captureEveryNTurns > 0 ? `every ${CONFIG.captureEveryNTurns} turn${CONFIG.captureEveryNTurns === 1 ? "" : "s"} + session end` : "session end only"}`);
+  lines.push(`Project tag: ${tags.project}`);
+  lines.push(`User tag: ${tags.user}`);
+
+  if (!isConfigured()) {
+    lines.push("");
+    lines.push("Run /supermemory-login to connect, or set SUPERMEMORY_API_KEY.");
+    console.log(lines.join("\n"));
+    return 0;
+  }
+
+  const client = new SupermemoryClient();
+  const [profileResult, accountInfo] = await Promise.all([
+    client.getProfile(tags.user),
+    getAccountInfo(apiUrl),
+  ]);
+
+  lines[2] = profileResult.success ? "Connected: yes" : "Connected: no";
+
+  if (accountInfo.email || accountInfo.name || accountInfo.userId || accountInfo.orgName) {
+    lines.push("");
+    lines.push("Account:");
+    if (accountInfo.email) lines.push(`Email: ${accountInfo.email}`);
+    if (accountInfo.name) lines.push(`Name: ${accountInfo.name}`);
+    if (accountInfo.userId) lines.push(`User ID: ${accountInfo.userId}`);
+    if (accountInfo.orgName) lines.push(`Organization: ${accountInfo.orgName}`);
+  } else {
+    lines.push("");
+    lines.push("Account: authenticated API key (account details unavailable from API key)");
+  }
+
+  if (!profileResult.success) {
+    lines.push("");
+    lines.push(`Connection check failed: ${profileResult.error}`);
+    const devTlsHint = getDevTlsHint(apiUrl);
+    if (devTlsHint) lines.push(devTlsHint);
+  }
+
+  console.log(lines.join("\n"));
+  return 0;
+}
+
 function logout(): number {
   if (clearCredentials()) {
     console.log("✓ Logged out. Credentials cleared.");
+    console.log("This only logs out this local OpenCode install. To revoke the account-level OpenCode integration key, disconnect it from the Supermemory integrations page.");
+    if (process.env.SUPERMEMORY_API_KEY) {
+      console.log("SUPERMEMORY_API_KEY is still set in this shell, so memory may remain active until you unset it or restart OpenCode.");
+    }
     return 0;
   } else {
     console.log("No credentials found.");
+    if (process.env.SUPERMEMORY_API_KEY) {
+      console.log("SUPERMEMORY_API_KEY is still set in this shell.");
+    }
     return 0;
   }
 }
@@ -506,11 +669,13 @@ Commands:
     --disable-context-recovery   Disable Oh My OpenCode's context hook
   login      Authenticate with Supermemory (opens browser)
   logout     Clear stored credentials
+  status     Show Supermemory connection status
 
 Examples:
   bunx opencode-supermemory@latest install
   bunx opencode-supermemory@latest login
   bunx opencode-supermemory@latest logout
+  bunx opencode-supermemory@latest status
 `);
 }
 
@@ -534,6 +699,8 @@ if (args[0] === "install") {
   login().then((code) => process.exit(code));
 } else if (args[0] === "logout") {
   process.exit(logout());
+} else if (args[0] === "status") {
+  status().then((code) => process.exit(code));
 } else {
   console.error(`Unknown command: ${args[0]}`);
   printHelp();

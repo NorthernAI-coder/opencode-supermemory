@@ -1,17 +1,20 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { arch, homedir, hostname, platform } from "node:os";
+import { randomBytes } from "node:crypto";
+import type { AddressInfo } from "node:net";
 import { openUrl } from "./openUrl.js";
 
 const CREDENTIALS_DIR = join(homedir(), ".supermemory-opencode");
-const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json");
-const AUTH_PORT = 19877;
-const AUTH_BASE_URL = process.env.SUPERMEMORY_AUTH_URL || "https://app.supermemory.ai/auth/connect";
+export const CREDENTIALS_FILE = join(CREDENTIALS_DIR, "credentials.json");
+const AUTH_BASE_URL = process.env.SUPERMEMORY_AUTH_URL || "https://app.supermemory.ai/auth/agent-connect";
+const AUTH_TIMEOUT = Number(process.env.SUPERMEMORY_AUTH_TIMEOUT) || 5 * 60_000;
 const CLIENT_NAME = "opencode";
 
-interface Credentials {
+export interface Credentials {
   apiKey: string;
+  apiBaseUrl?: string;
   createdAt: string;
 }
 
@@ -25,12 +28,28 @@ export function loadCredentials(): Credentials | null {
   }
 }
 
-export function saveCredentials(apiKey: string): void {
+function normalizeApiBaseUrl(apiBaseUrl: string | null | undefined): string | undefined {
+  if (!apiBaseUrl) return undefined;
+  try {
+    const url = new URL(apiBaseUrl);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return undefined;
+    url.pathname = url.pathname.replace(/\/+$/, "");
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveCredentials(apiKey: string, apiBaseUrl?: string): void {
   mkdirSync(CREDENTIALS_DIR, { recursive: true, mode: 0o700 });
   const credentials: Credentials = {
     apiKey,
     createdAt: new Date().toISOString(),
   };
+  const normalizedApiBaseUrl = normalizeApiBaseUrl(apiBaseUrl);
+  if (normalizedApiBaseUrl) credentials.apiBaseUrl = normalizedApiBaseUrl;
   writeFileSync(CREDENTIALS_FILE, JSON.stringify(credentials, null, 2), { mode: 0o600 });
 }
 
@@ -46,20 +65,44 @@ export interface AuthResult {
   error?: string;
 }
 
-export function startAuthFlow(timeoutMs = 120000): Promise<AuthResult> {
+export function startAuthFlow(timeoutMs = AUTH_TIMEOUT): Promise<AuthResult> {
   return new Promise((resolve) => {
     let resolved = false;
+    const stateToken = randomBytes(16).toString("hex");
 
     const server = createServer((req: IncomingMessage, res: ServerResponse) => {
       if (resolved) return;
 
-      const url = new URL(req.url || "/", `http://localhost:${AUTH_PORT}`);
+      const url = new URL(req.url || "/", "http://127.0.0.1");
 
       if (url.pathname === "/callback") {
-        const apiKey = url.searchParams.get("apikey");
+        const callbackState = url.searchParams.get("state");
+        if (callbackState !== stateToken) {
+          res.writeHead(403, { "Content-Type": "text/html" });
+          res.end(`
+            <!DOCTYPE html>
+            <html>
+            <head><title>Error</title></head>
+            <body style="font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0a0a0a; color: #fafafa;">
+              <div style="text-align: center;">
+                <h1 style="color: #ef4444;">Connection Failed</h1>
+                <p>Invalid auth state. Please try again.</p>
+              </div>
+            </body>
+            </html>
+          `);
+          resolved = true;
+          clearTimeout(timer);
+          server.close();
+          resolve({ success: false, error: "Invalid auth state" });
+          return;
+        }
 
-        if (apiKey) {
-          saveCredentials(apiKey);
+        const apiKey = url.searchParams.get("apikey") || url.searchParams.get("api_key");
+        const apiBaseUrl = url.searchParams.get("api_url") || url.searchParams.get("api_base_url");
+
+        if (apiKey?.startsWith("sm_")) {
+          saveCredentials(apiKey, apiBaseUrl ?? undefined);
           res.writeHead(200, { "Content-Type": "text/html" });
           res.end(`
             <!DOCTYPE html>
@@ -74,6 +117,7 @@ export function startAuthFlow(timeoutMs = 120000): Promise<AuthResult> {
             </html>
           `);
           resolved = true;
+          clearTimeout(timer);
           server.close();
           resolve({ success: true, apiKey });
         } else {
@@ -91,6 +135,7 @@ export function startAuthFlow(timeoutMs = 120000): Promise<AuthResult> {
             </html>
           `);
           resolved = true;
+          clearTimeout(timer);
           server.close();
           resolve({ success: false, error: "No API key received" });
         }
@@ -101,29 +146,39 @@ export function startAuthFlow(timeoutMs = 120000): Promise<AuthResult> {
     });
 
     server.on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "EADDRINUSE") {
-        resolve({ success: false, error: `Port ${AUTH_PORT} is already in use` });
-      } else {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
         resolve({ success: false, error: err.message });
       }
     });
 
-    server.listen(AUTH_PORT, () => {
-      const callbackUrl = `http://localhost:${AUTH_PORT}/callback`;
-      const authUrl = `${AUTH_BASE_URL}?callback=${encodeURIComponent(callbackUrl)}&client=${CLIENT_NAME}`;
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      const callbackUrl = `http://127.0.0.1:${port}/callback?state=${stateToken}`;
+      const params = new URLSearchParams({
+        callback: callbackUrl,
+        client: CLIENT_NAME,
+        hostname: `opencode - ${hostname()}`,
+        os: `${platform()}-${arch()}`,
+        cwd: process.cwd(),
+        cli_version: "2.0.6",
+      });
+      const authUrl = `${AUTH_BASE_URL}?${params.toString()}`;
 
       console.log("Opening browser for authentication...");
       console.log(`If it doesn't open, visit: ${authUrl}`);
       openUrl(authUrl).catch((error) => {
         if (!resolved) {
           resolved = true;
+          clearTimeout(timer);
           server.close();
           resolve({ success: false, error: `Failed to open browser: ${error.message}` });
         }
       });
     });
 
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (!resolved) {
         resolved = true;
         server.close();

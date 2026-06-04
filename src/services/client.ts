@@ -1,5 +1,5 @@
 import Supermemory from "supermemory";
-import { CONFIG, SUPERMEMORY_API_KEY, isConfigured } from "../config.js";
+import { CONFIG, SUPERMEMORY_API_KEY, getApiBaseUrl, isConfigured } from "../config.js";
 import { log } from "./logger.js";
 import type {
   ConversationIngestResponse,
@@ -56,6 +56,7 @@ export class SupermemoryClient {
       // writes to the OpenCode plugin in PostHog / `document.source`.
       this.client = new Supermemory({
         apiKey: SUPERMEMORY_API_KEY,
+        baseURL: getApiBaseUrl(),
         defaultHeaders: { "x-sm-source": "opencode" },
       });
       this.client.settings.update({
