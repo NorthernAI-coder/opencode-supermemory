@@ -12,10 +12,16 @@ Your agent remembers what you tell it - across sessions, across projects.
 bunx opencode-supermemory@latest install
 ```
 
-Then get your API key from [app.supermemory.ai](https://app.supermemory.ai/?view=integrations) and set it:
+Then authenticate with Supermemory:
 
 ```bash
-export SUPERMEMORY_API_KEY="sm_..."
+bunx opencode-supermemory@latest login
+```
+
+Check the connection any time:
+
+```bash
+bunx opencode-supermemory@latest status
 ```
 
 **Or let your agent do it** - paste this into OpenCode:
@@ -77,17 +83,15 @@ If not, add it manually:
 }
 ```
 
-#### Step 3: Configure API key
+#### Step 3: Authenticate
 
-Ask the user to get their API key from [app.supermemory.ai](https://app.supermemory.ai/?view=integrations).
-
-Then set it via environment variable:
+Run the browser authentication flow:
 
 ```bash
-export SUPERMEMORY_API_KEY="sm_..."
+bunx opencode-supermemory@latest login
 ```
 
-Or create `~/.config/opencode/supermemory.jsonc`:
+For headless environments, users can still set `SUPERMEMORY_API_KEY` manually or create `~/.config/opencode/supermemory.jsonc`:
 
 ```jsonc
 {
@@ -100,12 +104,12 @@ Or create `~/.config/opencode/supermemory.jsonc`:
 Tell the user to restart OpenCode and run:
 
 ```bash
-opencode -c
+bunx opencode-supermemory@latest status
 ```
 
-They should see `supermemory` in the tools list. If not, check:
+If it is not connected, check:
 
-1. Is `SUPERMEMORY_API_KEY` set?
+1. Is the user authenticated, or is `SUPERMEMORY_API_KEY` set?
 2. Is the plugin in `opencode.jsonc`?
 3. Check logs: `tail ~/.opencode-supermemory.log`
 
