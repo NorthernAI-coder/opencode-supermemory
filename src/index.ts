@@ -8,8 +8,9 @@ import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
 import { createCompactionHook, type CompactionContext } from "./services/compaction.js";
 
-import { isConfigured, CONFIG } from "./config.js";
+import { isConfigured, CONFIG, PLUGIN_VERSION } from "./config.js";
 import { log } from "./services/logger.js";
+import { checkNpmUpdate, formatUpdateNotice } from "./services/version-check.js";
 import type { MemoryScope, MemoryType } from "./types/index.js";
 
 const CODE_BLOCK_PATTERN = /```[\s\S]*?```/g;
@@ -26,6 +27,7 @@ Extract the key information the user wants remembered and save it as a concise, 
 - Choose an appropriate \`type\`: "preference", "project-config", "learned-pattern", etc.
 
 DO NOT skip this step. The user explicitly asked you to remember.`;
+const UPDATE_COMMAND = "bunx opencode-supermemory@latest install";
 
 function removeCodeBlocks(text: string): string {
   return text.replace(CODE_BLOCK_PATTERN, "").replace(INLINE_CODE_PATTERN, "");
@@ -34,6 +36,10 @@ function removeCodeBlocks(text: string): string {
 function detectMemoryKeyword(text: string): boolean {
   const textWithoutCode = removeCodeBlocks(text);
   return MEMORY_KEYWORD_PATTERN.test(textWithoutCode);
+}
+
+function combineContextParts(parts: Array<string | null | undefined>): string {
+  return parts.map((part) => part?.trim()).filter(Boolean).join("\n\n");
 }
 
 export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
@@ -128,6 +134,11 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
           injectedSessions.add(input.sessionID);
 
           let memoryContext = "";
+          const updateCheck = checkNpmUpdate(
+            "opencode-supermemory",
+            PLUGIN_VERSION,
+            UPDATE_COMMAND
+          ).then((info) => (info ? formatUpdateNotice(info) : null));
 
           if (CONFIG.autoRecallEveryPrompt) {
             const [profileResult, userMemoriesResult, projectMemoriesListResult] = await Promise.all([
@@ -163,13 +174,16 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
             memoryContext = formatContextForPrompt(profile, { results: [] }, { results: [] });
           }
 
-          if (memoryContext) {
+          const updateNotice = await updateCheck;
+          const firstMessageContext = combineContextParts([memoryContext, updateNotice]);
+
+          if (firstMessageContext) {
             const contextPart: Part = {
               id: `prt_supermemory-context-${Date.now()}`,
               sessionID: input.sessionID,
               messageID: output.message.id,
               type: "text",
-              text: memoryContext,
+              text: firstMessageContext,
               synthetic: true,
             };
 
@@ -178,7 +192,7 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
             const duration = Date.now() - start;
             log("chat.message: context injected", {
               duration,
-              contextLength: memoryContext.length,
+              contextLength: firstMessageContext.length,
             });
           }
         }
