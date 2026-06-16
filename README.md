@@ -213,6 +213,9 @@ Create `~/.config/opencode/supermemory.jsonc`:
   // API key (can also use SUPERMEMORY_API_KEY env var)
   "apiKey": "sm_...",
 
+  // Supermemory API base URL (point at a self-hosted instance, e.g. http://localhost:8787)
+  "baseUrl": "https://api.supermemory.ai",
+
   // Min similarity for memory retrieval (0-1)
   "similarityThreshold": 0.6,
 
