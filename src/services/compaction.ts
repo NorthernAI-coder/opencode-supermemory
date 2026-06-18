@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { supermemoryClient } from "./client.js";
+import { PROJECT_ENTITY_CONTEXT, supermemoryClient } from "./client.js";
 import { log } from "./logger.js";
 import { CONFIG } from "../config.js";
 
@@ -301,7 +301,8 @@ export function createCompactionHook(
       const result = await supermemoryClient.addMemory(
         `[Session Summary]\n${summaryContent}`,
         tags.project,
-        { type: "conversation" }
+        { type: "conversation" },
+        { entityContext: PROJECT_ENTITY_CONTEXT }
       );
 
       if (result.success) {

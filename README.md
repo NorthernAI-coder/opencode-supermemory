@@ -197,6 +197,9 @@ The `supermemory` tool is available to the agent:
 
 **Types:** `project-config`, `architecture`, `error-solution`, `preference`, `learned-pattern`, `conversation`
 
+OpenCode sends entity context when saving memories so Supermemory can extract
+different facts for user profile memories versus project/codebase knowledge.
+
 ## Memory Scoping
 
 | Scope   | Tag                                    | Persists     |

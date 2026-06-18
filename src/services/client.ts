@@ -9,6 +9,34 @@ import type {
 
 const TIMEOUT_MS = 30000;
 const MAX_CONVERSATION_CHARS = 100_000;
+const OPENCODE_SOURCE = "opencode";
+
+export const USER_ENTITY_CONTEXT = `Developer coding session transcript for a persistent user profile.
+
+EXTRACT:
+- User preferences: preferred languages, frameworks, libraries, editors, workflows, and communication style
+- Stable habits: testing style, code review expectations, formatting preferences, privacy preferences
+- Repeated personal decisions: tools the user consistently chooses or avoids
+- Long-lived learnings: concepts the user learned or wants remembered across projects
+
+SKIP:
+- Project-specific architecture unless it reflects a durable user preference
+- One-off assistant suggestions the user did not accept
+- Low-level implementation details that only matter inside the current repository`;
+
+export const PROJECT_ENTITY_CONTEXT = `Project/codebase knowledge from OpenCode coding sessions.
+
+EXTRACT:
+- Architecture: repo structure, services, modules, data flow, and integration boundaries
+- Conventions: naming, component patterns, API patterns, testing practices, and style rules
+- Decisions: chosen approaches, tradeoffs, migrations, and rejected alternatives
+- Setup: commands, environment requirements, deployment notes, and debugging workflows
+- Implementation lessons: bugs fixed, root causes, and reusable project-specific context
+
+SKIP:
+- Generic user preferences that are not specific to this project
+- Verbatim assistant explanations unless they became an accepted project decision
+- Transient command output with no lasting project value`;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -57,7 +85,7 @@ export class SupermemoryClient {
       this.client = new Supermemory({
         apiKey: SUPERMEMORY_API_KEY,
         baseURL: getApiBaseUrl(),
-        defaultHeaders: { "x-sm-source": "opencode" },
+        defaultHeaders: { "x-sm-source": OPENCODE_SOURCE },
       });
       this.client.settings.update({
 	     	shouldLLMFilter: true,
@@ -111,25 +139,45 @@ export class SupermemoryClient {
   async addMemory(
     content: string,
     containerTag: string,
-    metadata?: { type?: MemoryType; tool?: string; [key: string]: unknown }
+    metadata?: { type?: MemoryType; tool?: string; [key: string]: unknown },
+    options?: { customId?: string; entityContext?: string }
   ) {
-    log("addMemory: start", { containerTag, contentLength: content.length });
+    log("addMemory: start", {
+      containerTag,
+      contentLength: content.length,
+      customId: options?.customId,
+      hasEntityContext: !!options?.entityContext,
+    });
     try {
       // Always stamp `sm_source` so mono's `document.source` column attributes
       // these writes to the OpenCode plugin. Caller-provided metadata wins on
       // conflicts.
       const mergedMetadata = {
-        sm_source: "opencode",
+        sm_source: OPENCODE_SOURCE,
         sm_capture_mode: metadata?.sm_capture_mode ?? "tool",
         ...(metadata ?? {}),
       } as unknown as Record<string, string | number | boolean | string[]>;
 
+      const payload: {
+        content: string;
+        containerTag: string;
+        metadata: Record<string, string | number | boolean | string[]>;
+        customId?: string;
+        entityContext?: string;
+      } = {
+        content,
+        containerTag,
+        metadata: mergedMetadata,
+      };
+      if (options?.customId) {
+        payload.customId = options.customId;
+      }
+      if (options?.entityContext) {
+        payload.entityContext = options.entityContext;
+      }
+
       const result = await withTimeout(
-        this.getClient().memories.add({
-          content,
-          containerTag,
-          metadata: mergedMetadata,
-        }),
+        this.getClient().memories.add(payload),
         TIMEOUT_MS
       );
       log("addMemory: success", { id: result.id });
@@ -183,7 +231,11 @@ export class SupermemoryClient {
     conversationId: string,
     messages: ConversationMessage[],
     containerTags: string[],
-    metadata?: Record<string, string | number | boolean>
+    metadata?: Record<string, string | number | boolean>,
+    options?: {
+      defaultEntityContext?: string;
+      entityContextByContainerTag?: Record<string, string>;
+    }
   ) {
     log("ingestConversation: start", {
       conversationId,
@@ -219,7 +271,11 @@ export class SupermemoryClient {
     let firstError: string | null = null;
 
     for (const tag of uniqueTags) {
-      const result = await this.addMemory(content, tag, ingestMetadata);
+      const entityContext =
+        options?.entityContextByContainerTag?.[tag] ?? options?.defaultEntityContext;
+      const result = await this.addMemory(content, tag, ingestMetadata, {
+        ...(entityContext ? { entityContext } : {}),
+      });
       if (result.success) {
         savedIds.push(result.id);
       } else if (!firstError) {
