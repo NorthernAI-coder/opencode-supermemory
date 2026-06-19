@@ -20,7 +20,6 @@ EXTRACT:
 - Long-lived learnings: concepts the user learned or wants remembered across projects
 
 SKIP:
-- Project-specific architecture unless it reflects a durable user preference
 - One-off assistant suggestions the user did not accept
 - Low-level implementation details that only matter inside the current repository`;
 
@@ -34,7 +33,6 @@ EXTRACT:
 - Implementation lessons: bugs fixed, root causes, and reusable project-specific context
 
 SKIP:
-- Generic user preferences that are not specific to this project
 - Verbatim assistant explanations unless they became an accepted project decision
 - Transient command output with no lasting project value`;
 
