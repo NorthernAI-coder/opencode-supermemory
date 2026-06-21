@@ -2,6 +2,10 @@ import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Part } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin";
 
+import {
+  PROJECT_ENTITY_CONTEXT,
+  USER_ENTITY_CONTEXT,
+} from "./services/entity-context.js";
 import { supermemoryClient } from "./services/client.js";
 import { formatContextForPrompt } from "./services/context.js";
 import { getTags } from "./services/tags.js";
@@ -312,11 +316,14 @@ export const SupermemoryPlugin: Plugin = async (ctx: PluginInput) => {
                 const scope = args.scope || "project";
                 const containerTag =
                   scope === "user" ? tags.user : tags.project;
+                const entityContext =
+                  scope === "user" ? USER_ENTITY_CONTEXT : PROJECT_ENTITY_CONTEXT;
 
                 const result = await supermemoryClient.addMemory(
                   sanitizedContent,
                   containerTag,
-                  { type: args.type }
+                  { type: args.type },
+                  { entityContext }
                 );
 
                 if (!result.success) {

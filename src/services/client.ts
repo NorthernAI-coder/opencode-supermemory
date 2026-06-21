@@ -9,6 +9,7 @@ import type {
 
 const TIMEOUT_MS = 30000;
 const MAX_CONVERSATION_CHARS = 100_000;
+const OPENCODE_SOURCE = "opencode";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -57,7 +58,7 @@ export class SupermemoryClient {
       this.client = new Supermemory({
         apiKey: SUPERMEMORY_API_KEY,
         baseURL: getApiBaseUrl(),
-        defaultHeaders: { "x-sm-source": "opencode" },
+        defaultHeaders: { "x-sm-source": OPENCODE_SOURCE },
       });
       this.client.settings.update({
 	     	shouldLLMFilter: true,
@@ -111,25 +112,45 @@ export class SupermemoryClient {
   async addMemory(
     content: string,
     containerTag: string,
-    metadata?: { type?: MemoryType; tool?: string; [key: string]: unknown }
+    metadata?: { type?: MemoryType; tool?: string; [key: string]: unknown },
+    options?: { customId?: string; entityContext?: string }
   ) {
-    log("addMemory: start", { containerTag, contentLength: content.length });
+    log("addMemory: start", {
+      containerTag,
+      contentLength: content.length,
+      customId: options?.customId,
+      hasEntityContext: !!options?.entityContext,
+    });
     try {
       // Always stamp `sm_source` so mono's `document.source` column attributes
       // these writes to the OpenCode plugin. Caller-provided metadata wins on
       // conflicts.
       const mergedMetadata = {
-        sm_source: "opencode",
+        sm_source: OPENCODE_SOURCE,
         sm_capture_mode: metadata?.sm_capture_mode ?? "tool",
         ...(metadata ?? {}),
       } as unknown as Record<string, string | number | boolean | string[]>;
 
+      const payload: {
+        content: string;
+        containerTag: string;
+        metadata: Record<string, string | number | boolean | string[]>;
+        customId?: string;
+        entityContext?: string;
+      } = {
+        content,
+        containerTag,
+        metadata: mergedMetadata,
+      };
+      if (options?.customId) {
+        payload.customId = options.customId;
+      }
+      if (options?.entityContext) {
+        payload.entityContext = options.entityContext;
+      }
+
       const result = await withTimeout(
-        this.getClient().memories.add({
-          content,
-          containerTag,
-          metadata: mergedMetadata,
-        }),
+        this.getClient().memories.add(payload),
         TIMEOUT_MS
       );
       log("addMemory: success", { id: result.id });
@@ -183,7 +204,11 @@ export class SupermemoryClient {
     conversationId: string,
     messages: ConversationMessage[],
     containerTags: string[],
-    metadata?: Record<string, string | number | boolean>
+    metadata?: Record<string, string | number | boolean>,
+    options?: {
+      defaultEntityContext?: string;
+      entityContextByContainerTag?: Record<string, string>;
+    }
   ) {
     log("ingestConversation: start", {
       conversationId,
@@ -219,7 +244,11 @@ export class SupermemoryClient {
     let firstError: string | null = null;
 
     for (const tag of uniqueTags) {
-      const result = await this.addMemory(content, tag, ingestMetadata);
+      const entityContext =
+        options?.entityContextByContainerTag?.[tag] ?? options?.defaultEntityContext;
+      const result = await this.addMemory(content, tag, ingestMetadata, {
+        ...(entityContext ? { entityContext } : {}),
+      });
       if (result.success) {
         savedIds.push(result.id);
       } else if (!firstError) {
